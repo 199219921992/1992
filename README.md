@@ -1,1 +1,0 @@
-#Spin MAC on Azure
