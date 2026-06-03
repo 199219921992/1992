@@ -113,7 +113,7 @@ if master_file and sales_file:
         
         # Apply standard classifications
         df_master['AgeBucket'] = df_master['Age'].apply(assign_bucket)
-        df_sales['AgeBucket'] = df_sales['ProductAge'].apply(assign_bucket)
+        df_sales['AgeBucket'] = df_sales['ProductAge'].apply(apply_bucket if 'apply_bucket' in locals() else assign_bucket)
         
         # Calculate derived metrics
         df_sales['CalculatedDiscountPct'] = (df_sales['TotalDiscount'] / df_sales['TotalMRP'].replace(0, np.nan)) * 100
@@ -152,32 +152,18 @@ if master_file and sales_file:
         # ISOLATING METRICS TO TARGET AGE BUCKETS ONLY
         df_sales_in_buckets = df_sales_filtered[df_sales_filtered['AgeBucket'].isin(target_buckets)]
 
-        # --- KPI & SUMMARY PANEL ---
+        # --- KPI & SUMMARY PANEL (Fix 1: Active Profile Scope removed completely) ---
         st.subheader("🎯 Aging Stock Performance Overview")
-        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1, col_m2 = st.columns(2)
         with col_m1:
             st.metric("💰 Incentives Disbursed", f"₹ {round(df_sales_in_buckets['AchievedIncentive'].sum()):,}")
         with col_m2:
             st.metric("📦 Total Units Cleared", f"{int(round(df_sales_in_buckets['Quantity'].sum())):,}")
-        with col_m3:
-            st.metric("🏢 Total Target Stock Available", f"{int(round(df_master_filtered_age['AvailableQuantity'].sum())):,}")
 
-        # FIX 1: Explicit bucket-wise tracking right under the KPI block
-        st.markdown("#### 📊 Age Category-Wise Stock & Clearance Summary")
+        # Generate exact tabular balance mapping for charts and tables
         m_buckets_avail = df_master_filtered_age.groupby('AgeBucket')['AvailableQuantity'].sum()
         s_buckets_cleared = df_sales_in_buckets.groupby('AgeBucket')['Quantity'].sum()
-        
-        summary_rows = []
-        for b in target_buckets:
-            avail = int(round(m_buckets_avail.get(b, 0)))
-            cleared = int(round(s_buckets_cleared.get(b, 0)))
-            summary_rows.append({
-                "Age Category": b,
-                "Available Quantity (In Store)": avail,
-                "Cleared Quantity (Sold)": cleared
-            })
-        df_summary_kpi = pd.DataFrame(summary_rows)
-        st.dataframe(df_summary_kpi, use_container_width=True, hide_index=True)
+        inc_summary = df_sales_in_buckets.groupby('AgeBucket')['AchievedIncentive'].sum()
 
         st.markdown("---")
 
@@ -188,54 +174,80 @@ if master_file and sales_file:
         
         with tab1:
             st.subheader("📋 Store Balance Sheet: Inventory vs Liquidation")
-            st.markdown("Detailed itemized breakdown showing how many stock units are in store vs how many have been successfully sold.")
+            st.markdown("Analyze stock items remaining in store versus units sold, filtered dynamically by age categories.")
             
-            sold_summary = df_sales[df_sales['AgeBucket'].isin(target_buckets)].groupby('AgeBucket')['Quantity'].sum().reset_index().rename(columns={'Quantity': 'Units Sold'})
-            stock_summary = df_master_filtered_age.groupby('AgeBucket')['AvailableQuantity'].sum().reset_index().rename(columns={'AvailableQuantity': 'Stocks In Store'})
-            inc_summary = df_sales[df_sales['AgeBucket'].isin(target_buckets)].groupby('AgeBucket')['AchievedIncentive'].sum().reset_index().rename(columns={'AchievedIncentive': 'Incentive Earned (₹)'})
+            # Fix 2: Creating specialized inner sub-tabs for category-wise exploration
+            cat_tab_labels = ["📊 Global Overview"] + target_buckets
+            cat_tabs = st.tabs(cat_tab_labels)
             
-            balance_df = pd.merge(stock_summary, sold_summary, on='AgeBucket', how='outer').fillna(0)
-            balance_df = pd.merge(balance_df, inc_summary, on='AgeBucket', how='outer').fillna(0)
-            
-            balance_df['Stocks In Store'] = balance_df['Stocks In Store'].round(0).astype(int)
-            balance_df['Units Sold'] = balance_df['Units Sold'].round(0).astype(int)
-            balance_df['Incentive Earned (₹)'] = balance_df['Incentive Earned (₹)'].round(0).astype(int)
-            
-            balance_df['Clearance Rate (%)'] = np.where(
-                balance_df['Stocks In Store'] > 0, 
-                (balance_df['Units Sold'] / (balance_df['Stocks In Store'] + balance_df['Units Sold'])) * 100, 
-                100.0
-            )
-            balance_df['Clearance Rate (%)'] = balance_df['Clearance Rate (%)'].round(1)
-            
-            st.dataframe(balance_df, use_container_width=True, hide_index=True)
-            
-            st.markdown("---")
-            chart_col1, chart_col2 = st.columns(2)
-            
-            with chart_col1:
-                fig_pie_stock = px.pie(
-                    balance_df, 
-                    values='Stocks In Store', 
-                    names='AgeBucket',
-                    title="Warehouse Stock Volume Breakdown",
-                    hole=0.4,
-                    color_discrete_sequence=px.colors.sequential.Plotly3
-                )
-                fig_pie_stock.update_traces(textinfo='value+percent')
-                st.plotly_chart(fig_pie_stock, use_container_width=True)
+            # --- 1. GLOBAL OVERVIEW SUB-TAB ---
+            with cat_tabs[0]:
+                sold_df = s_buckets_cleared.reset_index().rename(columns={'Quantity': 'Units Sold'})
+                stock_df = m_buckets_avail.reset_index().rename(columns={'AvailableQuantity': 'Stocks In Store'})
+                inc_df = inc_summary.reset_index().rename(columns={'AchievedIncentive': 'Incentive Earned (₹)'})
                 
-            with chart_col2:
+                balance_df = pd.merge(stock_df, sold_df, on='AgeBucket', how='outer').fillna(0)
+                balance_df = pd.merge(balance_df, inc_df, on='AgeBucket', how='outer').fillna(0)
+                
+                balance_df['Stocks In Store'] = balance_df['Stocks In Store'].round(0).astype(int)
+                balance_df['Units Sold'] = balance_df['Units Sold'].round(0).astype(int)
+                balance_df['Incentive Earned (₹)'] = balance_df['Incentive Earned (₹)'].round(0).astype(int)
+                
+                balance_df['Clearance Rate (%)'] = np.where(
+                    balance_df['Stocks In Store'] > 0, 
+                    (balance_df['Units Sold'] / (balance_df['Stocks In Store'] + balance_df['Units Sold'])) * 100, 
+                    100.0
+                )
+                balance_df['Clearance Rate (%)'] = balance_df['Clearance Rate (%)'].round(1)
+                
+                st.dataframe(balance_df, use_container_width=True, hide_index=True)
+                
+                st.markdown("---")
                 fig_compare = px.bar(
                     balance_df, 
                     x='AgeBucket', 
                     y=['Stocks In Store', 'Units Sold'],
                     barmode='group',
-                    title="Side-by-Side Comparison: Current Stock vs. Units Sold",
+                    title="Overall Volume Matrix: Available Stock vs. Units Sold",
                     labels={'value': 'Total Items Count', 'variable': 'Category Metric'},
                     color_discrete_sequence=['#31333F', '#FF4B4B']
                 )
                 st.plotly_chart(fig_compare, use_container_width=True)
+
+            # --- 2. INDIVIDUAL CATEGORY SUB-TABS (WITH REQUESTED PIE CHARTS) ---
+            for idx, bucket_name in enumerate(target_buckets, start=1):
+                with cat_tabs[idx]:
+                    avail_qty = int(round(m_buckets_avail.get(bucket_name, 0)))
+                    sold_qty = int(round(s_buckets_cleared.get(bucket_name, 0)))
+                    incentive_amt = int(round(inc_summary.get(bucket_name, 0)))
+                    
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("🏢 Available Quantity (In Store)", f"{avail_qty:,}")
+                    c2.metric("📦 Cleared Quantity (Sold)", f"{sold_qty:,}")
+                    c3.metric("💰 Incentive Generated", f"₹ {incentive_amt:,}")
+                    
+                    st.markdown("---")
+                    
+                    if avail_qty > 0 or sold_qty > 0:
+                        # Construct a focused DataFrame for the Stock vs Sold Pie Chart
+                        pie_mix_df = pd.DataFrame({
+                            "Inventory Metric": ["Stocks In Store", "Units Sold"],
+                            "Volume Count": [avail_qty, sold_qty]
+                        })
+                        
+                        fig_category_pie = px.pie(
+                            pie_mix_df,
+                            values='Volume Count',
+                            names='Inventory Metric',
+                            title=f"Liquidation Progress Share ({bucket_name})",
+                            hole=0.4,
+                            color='Inventory Metric',
+                            color_discrete_map={"Stocks In Store": "#31333F", "Units Sold": "#FF4B4B"}
+                        )
+                        fig_category_pie.update_traces(textinfo='value+percent')
+                        st.plotly_chart(fig_category_pie, use_container_width=True)
+                    else:
+                        st.info(f"No stock records or transaction items found for the category: {bucket_name}")
 
         with tab2:
             st.subheader("👤 Chronological Performance Matrix")
