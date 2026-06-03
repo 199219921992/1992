@@ -81,11 +81,20 @@ if master_file and sales_file:
         df_master = pd.read_csv(master_file)
         df_sales = pd.read_csv(sales_file)
         
-        # Clean Datatypes & Safely convert values to float/int strings
+        # Clean Master Stock Report Datatypes
         df_master['Age'] = pd.to_numeric(df_master['Age'], errors='coerce')
         df_master['AvailableQuantity'] = pd.to_numeric(df_master['AvailableQuantity'], errors='coerce').fillna(0)
-        df_master['TotalCTC'] = pd.to_numeric(df_master['TotalCTC'], errors='coerce').fillna(0)
+        df_master['CTC'] = pd.to_numeric(df_master['CTC'], errors='coerce').fillna(0)
+        df_master['MRP'] = pd.to_numeric(df_master['MRP'], errors='coerce').fillna(0)
         
+        # FIX: Robust dynamic validation fallback for Master TotalCTC/TotalMRP records
+        df_master['TotalCTC'] = pd.to_numeric(df_master['TotalCTC'], errors='coerce').fillna(0)
+        df_master['TotalCTC'] = np.where(df_master['TotalCTC'] == 0, df_master['AvailableQuantity'] * df_master['CTC'], df_master['TotalCTC'])
+        
+        df_master['TotalMRP'] = pd.to_numeric(df_master['TotalMRP'], errors='coerce').fillna(0)
+        df_master['TotalMRP'] = np.where(df_master['TotalMRP'] == 0, df_master['AvailableQuantity'] * df_master['MRP'], df_master['TotalMRP'])
+        
+        # Clean Sales Report Datatypes
         df_sales['ProductAge'] = pd.to_numeric(df_sales['ProductAge'], errors='coerce')
         df_sales['MRP'] = pd.to_numeric(df_sales['MRP'], errors='coerce').fillna(0)
         df_sales['Quantity'] = pd.to_numeric(df_sales['Quantity'], errors='coerce').fillna(0)
@@ -99,8 +108,8 @@ if master_file and sales_file:
             
         # Parse Dates safely for interactive timelines
         df_sales['BillDate'] = pd.to_datetime(df_sales['BillDate'], errors='coerce')
-        df_sales['SaleMonth'] = df_sales['BillDate'].dt.strftime('%Y-%m').fillna('Unknown Date')
-        df_sales['SaleDay'] = df_sales['BillDate'].dt.strftime('%Y-%m-%d').fillna('Unknown Date')
+        df_sales['SaleMonth'] = df_sales['BillDate'].dt.strftime('%Y-%m').fillna('Unknown Month')
+        df_sales['SaleDay'] = df_sales['BillDate'].dt.strftime('%Y-%m-%d').fillna('Unknown Day')
         
         # Apply standard classifications
         df_master['AgeBucket'] = df_master['Age'].apply(assign_bucket)
@@ -111,7 +120,6 @@ if master_file and sales_file:
         df_sales['CalculatedDiscountPct'] = df_sales['CalculatedDiscountPct'].fillna(0)
         df_sales['AchievedIncentive'] = df_sales.apply(compute_incentives, axis=1)
 
-        # Remove baseline stock data from sales buckets for visualization cleanliness
         target_buckets = ["300–399 days", "400–499 days", "500–599 days", "600–699 days", "700+ days"]
         df_master_filtered_age = df_master[df_master['AgeBucket'].isin(target_buckets)]
         
@@ -119,21 +127,20 @@ if master_file and sales_file:
         # SIDEBAR FILTERS (Interactive Engine)
         # ---------------------------------------------------------
         st.sidebar.markdown("---")
-        st.sidebar.header("🔍 Interactive Controls")
+        st.sidebar.header("🔍 Interactive Filters")
         
-        # Sales Person Filter
+        # Sales Person Selection
         salespeople = sorted([str(x) for x in df_sales['SalesPerson'].dropna().unique()])
-        selected_sp = st.sidebar.selectbox("Filter by Sales Person", ["All Staff"] + salespeople)
+        selected_sp = st.sidebar.selectbox("🎯 Select Sales Person", ["All Staff"] + salespeople)
         
-        # Month Filter
-        months = sorted([str(x) for x in df_sales['SaleMonth'].unique()])
-        selected_month = st.sidebar.selectbox("Filter by Month", ["All Months"] + months)
+        # Dynamic Time Window Filters
+        months = sorted([str(x) for x in df_sales['SaleMonth'].unique() if x != 'Unknown Month'])
+        selected_month = st.sidebar.selectbox("🗓️ Select Month", ["All Months"] + months)
         
-        # Day Filter
-        days = sorted([str(x) for x in df_sales['SaleDay'].unique()])
-        selected_day = st.sidebar.selectbox("Filter by Exact Day", ["All Days"] + days)
+        days = sorted([str(x) for x in df_sales['SaleDay'].unique() if x != 'Unknown Day'])
+        selected_day = st.sidebar.selectbox("📅 Select Day", ["All Days"] + days)
         
-        # Apply Filters Dynamically to Sales Record Frame
+        # Apply Global Row Scope Filtering Base
         df_sales_filtered = df_sales.copy()
         if selected_sp != "All Staff":
             df_sales_filtered = df_sales_filtered[df_sales_filtered['SalesPerson'] == selected_sp]
@@ -143,7 +150,7 @@ if master_file and sales_file:
             df_sales_filtered = df_sales_filtered[df_sales_filtered['SaleDay'] == selected_day]
 
         # ---------------------------------------------------------
-        # TOP RUNTIME RUNNING METRICS (Rounded)
+        # TOP RUNTIME RUNNING METRICS (Rounded to Whole Numbers)
         # ---------------------------------------------------------
         col_m1, col_m2, col_m3 = st.columns(3)
         with col_m1:
@@ -151,21 +158,19 @@ if master_file and sales_file:
         with col_m2:
             st.metric("📦 Units Cleared via Sales", f"{int(round(df_sales_filtered['Quantity'].sum())):,}")
         with col_m3:
-            st.metric("🎯 Filter Context Active", f"{selected_sp} | {selected_month}")
+            st.metric("👤 Active Profile Scope", f"{selected_sp}")
 
         st.markdown("---")
 
         # ---------------------------------------------------------
-        # VISUAL ANALYTICS LAYER (Pie Charts & Tracking)
+        # VISUAL ANALYTICS & TAB LAYER
         # ---------------------------------------------------------
-        st.subheader("📊 Stock Distribution & Performance Analytics")
-        tab1, tab2, tab3 = st.tabs(["📈 Stock vs Sales Mix", "👤 Personnel Performance Matrix", "🔮 Upcoming Slabs Pipe"])
+        tab1, tab2, tab3 = st.tabs(["📈 Stock vs Sales Mix", "👤 Chronological Performance Matrix", "🔮 Upcoming Slabs Pipe"])
         
         with tab1:
             chart_col1, chart_col2 = st.columns(2)
             
             with chart_col1:
-                # 1. Total existing aging products (Master Inventory Pie Chart)
                 stock_pie_df = df_master_filtered_age.groupby('AgeBucket')['AvailableQuantity'].sum().reset_index()
                 stock_pie_df['AvailableQuantity'] = stock_pie_df['AvailableQuantity'].round(0)
                 
@@ -181,114 +186,5 @@ if master_file and sales_file:
                 st.plotly_chart(fig_pie_stock, use_container_width=True)
                 
             with chart_col2:
-                # 5. Available vs Sold quantities bar breakdown
                 sold_group = df_sales_filtered[df_sales_filtered['AgeBucket'].isin(target_buckets)].groupby('AgeBucket')['Quantity'].sum().reset_index().rename(columns={'Quantity': 'Units Sold'})
-                avail_group = df_master_filtered_age.groupby('AgeBucket')['AvailableQuantity'].sum().reset_index().rename(columns={'AvailableQuantity': 'Warehouse Available'})
-                
-                comparison_df = pd.merge(avail_group, sold_group, on='AgeBucket', how='outer').fillna(0)
-                comparison_df[['Warehouse Available', 'Units Sold']] = comparison_df[['Warehouse Available', 'Units Sold']].round(0)
-                
-                fig_compare = px.bar(
-                    comparison_df, 
-                    x='AgeBucket', 
-                    y=['Warehouse Available', 'Units Sold'],
-                    barmode='group',
-                    title="Volume Comparison: Available Stock vs. Units Sold",
-                    labels={'value': 'Total Items Count', 'variable': 'Category Metric'},
-                    color_discrete_sequence=['#31333F', '#FF4B4B']
-                )
-                st.plotly_chart(fig_compare, use_container_width=True)
-
-        with tab2:
-            st.subheader("👤 Salesperson Performance Breakdown")
-            
-            # Pivot table for Age Category Wise Quantities Sold
-            qty_pivot = df_sales_filtered.pivot_table(
-                index='SalesPerson', 
-                columns='AgeBucket', 
-                values='Quantity', 
-                aggfunc='sum', 
-                fill_value=0
-            ).reset_index()
-            
-            # Filter columns to only include available target slices
-            existing_qty_cols = [c for c in target_buckets if c in qty_pivot.columns]
-            qty_pivot['Total Items Sold'] = qty_pivot[existing_qty_cols].sum(axis=1) if existing_qty_cols else 0
-            
-            # Pivot table for Incentives Achieved
-            inc_pivot = df_sales_filtered.pivot_table(
-                index='SalesPerson', 
-                columns='AgeBucket', 
-                values='AchievedIncentive', 
-                aggfunc='sum', 
-                fill_value=0
-            ).reset_index()
-            
-            existing_inc_cols = [c for c in target_buckets if c in inc_pivot.columns]
-            inc_pivot['Total Incentive (₹)'] = inc_pivot[existing_inc_cols].sum(axis=1) if existing_inc_cols else 0
-            
-            # Construct master display data view
-            sales_summary = pd.merge(
-                qty_pivot[['SalesPerson', 'Total Items Sold']], 
-                inc_pivot[['SalesPerson', 'Total Incentive (₹)']], 
-                on='SalesPerson', 
-                how='outer'
-            ).fillna(0)
-            
-            # Apply strict clean rounding constraint
-            sales_summary['Total Items Sold'] = sales_summary['Total Items Sold'].round(0).astype(int)
-            sales_summary['Total Incentive (₹)'] = sales_summary['Total Incentive (₹)'].round(0).astype(int)
-            
-            st.dataframe(sales_summary.sort_values(by='Total Incentive (₹)', ascending=False), use_container_width=True)
-
-        with tab3:
-            # 6. Read stock report and pull upcoming items moving to 300-399 slab
-            st.subheader("🔮 Near-Term Aging Pipeline Exposure (200-299 Days)")
-            st.markdown("This view isolates items in your warehouse that are currently **between 200 and 299 days old**. These products will hit the standard incentive slabs within the next quarter.")
-            
-            df_upcoming = df_master[(df_master['Age'] >= 200) & (df_master['Age'] < 300)].copy()
-            
-            if not df_upcoming.empty:
-                pipe_qty = df_upcoming['AvailableQuantity'].sum()
-                pipe_ctc = df_upcoming['TotalCTC'].sum()
-                
-                col_p1, col_p2 = st.columns(2)
-                col_p1.metric("📦 Upcoming Slab Stock Volume", f"{int(round(pipe_qty)):,} Units")
-                col_p2.metric("💵 Total Asset Cost Exposure (CTC)", f"₹ {round(pipe_ctc):,}")
-                
-                st.markdown("#### Itemized Breakdown of Upcoming Pipeline Assets")
-                display_upcoming = df_upcoming[['ProductID', 'ProductName', 'Age', 'AvailableQuantity', 'TotalCTC', 'Brand', 'Category']].copy()
-                display_upcoming['AvailableQuantity'] = display_upcoming['AvailableQuantity'].round(0).astype(int)
-                display_upcoming['TotalCTC'] = display_upcoming['TotalCTC'].round(0).astype(int)
-                display_upcoming['Age'] = display_upcoming['Age'].astype(int)
-                
-                st.dataframe(display_upcoming.sort_values(by='Age', ascending=False), use_container_width=True)
-            else:
-                st.info("Excellent! There are currently no products in the master stock records matching the 200-299 days pre-aging window.")
-
-        # ---------------------------------------------------------
-        # HIDE PROCESSED TRANSACTION LEDGER
-        # ---------------------------------------------------------
-        st.markdown("---")
-        with st.expander("📋 View Processed Transaction Line Items (Hidden by Default)", expanded=False):
-            export_cols = ['BillNumber', 'BillDate', 'SalesPerson', 'ProductID', 'ProductName', 'ProductAge', 'AgeBucket', 'CalculatedDiscountPct', 'MRP', 'Quantity', 'AchievedIncentive']
-            df_ledger = df_sales_filtered[export_cols].copy()
-            
-            # Final clean layout roundoff mapping
-            df_ledger['CalculatedDiscountPct'] = df_ledger['CalculatedDiscountPct'].round(0)
-            df_ledger['MRP'] = df_ledger['MRP'].round(0)
-            df_ledger['Quantity'] = df_ledger['Quantity'].round(0)
-            df_ledger['AchievedIncentive'] = df_ledger['AchievedIncentive'].round(0)
-            
-            st.dataframe(df_ledger, use_container_width=True)
-            
-    except Exception as e:
-        st.error(f"Error parsing datasets. Ensure files match required system schemas. Details: {e}")
-else:
-    st.info("💡 Complete Dashboard initialization is pending. Please upload your Master Stock and Product Wise Sales CSV files via the sidebar configuration panel.")
-`
-        }
-      }, document.getElementById("root"));
-    </script>
-  </body>
-</html>
+                avail_group = df_master_filtered_age.groupby('AgeBucket
