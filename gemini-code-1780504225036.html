@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sales & Incentive Performance Dashboard</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.59.0/build/stlite.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="https://cdn.jsdelivr.net/npm/@stlite/mountable@0.59.0/build/stlite.js"></script>
+    <script>
+      stlite.mount({
+        requirements: ["pandas", "plotly", "numpy"],
+        entrypoint: "app.py",
+        files: {
+          "app.py": `
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import numpy as np
+
+# Page configuration
+st.set_page_config(layout="wide", page_title="Incentive Dashboard")
+
+st.title("📊 Age Bucket & Sales Incentive Dashboard")
+st.markdown("Upload your Master Stock Report and Product Sales Report to compute custom age categories and CRO Spot incentives.")
+
+# Sidebar File Uploaders
+st.sidebar.header("📁 Upload Source Data")
+master_file = st.sidebar.file_uploader("1. Master Stock Report (CSV)", type=["csv"])
+sales_file = st.sidebar.file_uploader("2. Product Wise Sales Report (CSV)", type=["csv"])
+
+def compute_incentives(row):
+    """
+    Business logic calculator based on explicit stock age and discount thresholds.
+    Allows a minor rounding variance (+/- 1.5%) for actual system discount flags.
+    """
+    age = row['ProductAge']
+    disc = row['CalculatedDiscountPct']
+    mrp = row['MRP']
+    qty = row['Quantity']
+    
+    if pd.isna(age) or pd.isna(mrp) or pd.isna(qty):
+        return "Unknown", 0.0
+        
+    inc_pct = 0.0
+    bucket = "Other"
+    
+    if 300 <= age <= 399:
+        bucket = "300–399 days"
+        if abs(disc - 10) <= 1.5: inc_pct = 0.02
+    elif 400 <= age <= 499:
+        bucket = "400–499 days"
+        if abs(disc - 15) <= 1.5: inc_pct = 0.02
+    elif 500 <= age <= 599:
+        bucket = "500–599 days"
+        if abs(disc - 20) <= 1.5: inc_pct = 0.03
+        elif abs(disc - 15) <= 1.5: inc_pct = 0.05
+    elif 600 <= age <= 699:
+        bucket = "600–699 days"
+        if abs(disc - 25) <= 1.5: inc_pct = 0.05
+        elif abs(disc - 20) <= 1.5: inc_pct = 0.07
+    elif age >= 700:
+        bucket = "700+ days"
+        if abs(disc - 35) <= 1.5: inc_pct = 0.07
+        elif abs(disc - 25) <= 1.5: inc_pct = 0.10
+        
+    achieved_incentive = inc_pct * mrp * qty
+    return pd.Series([bucket, achieved_incentive])
+
+if master_file and sales_file:
+    try:
+        # Load Datasets
+        df_master = pd.read_csv(master_file)
+        df_sales = pd.read_csv(sales_file)
+        
+        st.success("🎉 Both files uploaded and loaded successfully!")
+        
+        # Clean & Convert numerical properties
+        df_sales['ProductAge'] = pd.to_numeric(df_sales['ProductAge'], errors='coerce')
+        df_sales['MRP'] = pd.to_numeric(df_sales['MRP'], errors='coerce')
+        df_sales['Quantity'] = pd.to_numeric(df_sales['Quantity'], errors='coerce')
+        df_sales['TotalDiscount'] = pd.to_numeric(df_sales['TotalDiscount'], errors='coerce')
+        df_sales['TotalMRP'] = pd.to_numeric(df_sales['TotalMRP'], errors='coerce')
+        
+        # Fallback to Master Stock Report age if 'ProductAge' is blank in Sales
+        if 'ProductID' in df_master.columns and 'Age' in df_master.columns:
+            age_mapping = df_master.set_index('ProductID')['Age'].to_dict()
+            df_sales['ProductAge'] = df_sales['ProductAge'].fillna(df_sales['ProductID'].map(age_mapping))
+
+        # Calculate exact item discount percentage 
+        df_sales['CalculatedDiscountPct'] = (df_sales['TotalDiscount'] / df_sales['TotalMRP'].replace(0, np.nan)) * 100
+        df_sales['CalculatedDiscountPct'] = df_sales['CalculatedDiscountPct'].fillna(0)
+        
+        # Apply the explicit matrix calculations
+        df_sales[['AgeBucket', 'AchievedIncentive']] = df_sales.apply(compute_incentives, axis=1)
+        
+        # --- Dashboard Visual Summary KPIs ---
+        total_incentives = df_sales['AchievedIncentive'].sum()
+        total_qty_sold = df_sales['Quantity'].sum()
+        active_salespeople = df_sales['SalesPerson'].nunique()
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("💰 Total Incentives Disbursed", f"₹ {total_incentives:,.2f}")
+        col2.metric("📦 Eligible Items Sold", f"{int(total_qty_sold):,}")
+        col3.metric("👥 Active Sales Force", active_salespeople)
+        
+        st.markdown("---")
+        
+        # --- Aggregations & Pivot Tables ---
+        st.subheader("👤 Salesperson Performance Breakdown")
+        
+        # Pivot table for Age Category Wise Quantities Sold
+        qty_pivot = df_sales.pivot_table(
+            index='SalesPerson', 
+            columns='AgeBucket', 
+            values='Quantity', 
+            aggfunc='sum', 
+            fill_value=0
+        ).reset_index()
+        
+        # Pivot table for Incentives Achieved
+        inc_pivot = df_sales.pivot_table(
+            index='SalesPerson', 
+            columns='AgeBucket', 
+            values='AchievedIncentive', 
+            aggfunc='sum', 
+            fill_value=0
+        ).reset_index()
+        
+        # Calculate individual totals
+        qty_pivot['Total Items Sold'] = qty_pivot.iloc[:, 1:].sum(axis=1)
+        inc_pivot['Total Incentive (₹)'] = inc_pivot.iloc[:, 1:].sum(axis=1)
+        
+        # Merge summaries
+        full_summary = pd.merge(qty_pivot[['SalesPerson', 'Total Items Sold']], inc_pivot, on='SalesPerson')
+        
+        st.dataframe(full_summary.style.format(precision=2), use_container_width=True)
+        
+        # --- Data Visualizations ---
+        st.markdown("---")
+        st.subheader("📊 Visual Analytics")
+        
+        chart_col1, chart_col2 = st.columns(2)
+        
+        with chart_col1:
+            # Incentives distribution by person
+            fig_inc = px.bar(
+                df_sales.groupby('SalesPerson')['AchievedIncentive'].sum().reset_index(),
+                x='SalesPerson',
+                y='AchievedIncentive',
+                title="Total Earned Incentive per Salesperson",
+                labels={'AchievedIncentive': 'Incentive (₹)'},
+                color='AchievedIncentive',
+                color_continuous_scale='Viridis'
+            )
+            st.plotly_chart(fig_inc, use_container_width=True)
+            
+        with chart_col2:
+            # Stacked distribution profile of aging stock
+            fig_age = px.bar(
+                df_sales.groupby(['SalesPerson', 'AgeBucket'])['Quantity'].sum().reset_index(),
+                x='SalesPerson',
+                y='Quantity',
+                color='AgeBucket',
+                title="Age Category Segment Mix Sold",
+                labels={'Quantity': 'Units Sold'},
+                barmode='stack'
+            )
+            st.plotly_chart(fig_age, use_container_width=True)
+            
+        # --- Master Export Capability ---
+        st.markdown("---")
+        st.subheader("📋 Processed Transaction Line Items")
+        st.write("Below is the fully annotated records ledger containing calculated metrics:")
+        
+        export_cols = ['BillNumber', 'SalesPerson', 'ProductID', 'ProductName', 'ProductAge', 'AgeBucket', 'CalculatedDiscountPct', 'MRP', 'Quantity', 'AchievedIncentive']
+        st.dataframe(df_sales[export_cols], use_container_width=True)
+        
+    except Exception as e:
+        st.error(f"Error parsing datasets. Please ensure column formats align with your schema requirements. Details: {e}")
+else:
+    st.info("💡 Complete Dashboard initialization is pending. Please upload your CSV logs via the sidebar configuration panel.")
+`
+        }
+      }, document.getElementById("root"));
+    </script>
+  </body>
+</html>
