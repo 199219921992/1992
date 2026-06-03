@@ -149,17 +149,35 @@ if master_file and sales_file:
         if selected_day != "All Days":
             df_sales_filtered = df_sales_filtered[df_sales_filtered['SaleDay'] == selected_day]
 
-        # FIX 1: ISOLATING METRICS TO TARGET AGE BUCKETS ONLY
+        # ISOLATING METRICS TO TARGET AGE BUCKETS ONLY
         df_sales_in_buckets = df_sales_filtered[df_sales_filtered['AgeBucket'].isin(target_buckets)]
 
+        # --- KPI & SUMMARY PANEL ---
         st.subheader("🎯 Aging Stock Performance Overview")
         col_m1, col_m2, col_m3 = st.columns(3)
         with col_m1:
             st.metric("💰 Incentives Disbursed", f"₹ {round(df_sales_in_buckets['AchievedIncentive'].sum()):,}")
         with col_m2:
-            st.metric("📦 Units Cleared (Aged 300+ Days)", f"{int(round(df_sales_in_buckets['Quantity'].sum())):,}")
+            st.metric("📦 Total Units Cleared", f"{int(round(df_sales_in_buckets['Quantity'].sum())):,}")
         with col_m3:
-            st.metric("👤 Active Profile Filter Scope", f"{selected_sp}")
+            st.metric("🏢 Total Target Stock Available", f"{int(round(df_master_filtered_age['AvailableQuantity'].sum())):,}")
+
+        # FIX 1: Explicit bucket-wise tracking right under the KPI block
+        st.markdown("#### 📊 Age Category-Wise Stock & Clearance Summary")
+        m_buckets_avail = df_master_filtered_age.groupby('AgeBucket')['AvailableQuantity'].sum()
+        s_buckets_cleared = df_sales_in_buckets.groupby('AgeBucket')['Quantity'].sum()
+        
+        summary_rows = []
+        for b in target_buckets:
+            avail = int(round(m_buckets_avail.get(b, 0)))
+            cleared = int(round(s_buckets_cleared.get(b, 0)))
+            summary_rows.append({
+                "Age Category": b,
+                "Available Quantity (In Store)": avail,
+                "Cleared Quantity (Sold)": cleared
+            })
+        df_summary_kpi = pd.DataFrame(summary_rows)
+        st.dataframe(df_summary_kpi, use_container_width=True, hide_index=True)
 
         st.markdown("---")
 
@@ -172,7 +190,6 @@ if master_file and sales_file:
             st.subheader("📋 Store Balance Sheet: Inventory vs Liquidation")
             st.markdown("Detailed itemized breakdown showing how many stock units are in store vs how many have been successfully sold.")
             
-            # FIX 2: Generate exact tabular balance mapping
             sold_summary = df_sales[df_sales['AgeBucket'].isin(target_buckets)].groupby('AgeBucket')['Quantity'].sum().reset_index().rename(columns={'Quantity': 'Units Sold'})
             stock_summary = df_master_filtered_age.groupby('AgeBucket')['AvailableQuantity'].sum().reset_index().rename(columns={'AvailableQuantity': 'Stocks In Store'})
             inc_summary = df_sales[df_sales['AgeBucket'].isin(target_buckets)].groupby('AgeBucket')['AchievedIncentive'].sum().reset_index().rename(columns={'AchievedIncentive': 'Incentive Earned (₹)'})
@@ -184,7 +201,6 @@ if master_file and sales_file:
             balance_df['Units Sold'] = balance_df['Units Sold'].round(0).astype(int)
             balance_df['Incentive Earned (₹)'] = balance_df['Incentive Earned (₹)'].round(0).astype(int)
             
-            # Calculate clearance percentage rate safely
             balance_df['Clearance Rate (%)'] = np.where(
                 balance_df['Stocks In Store'] > 0, 
                 (balance_df['Units Sold'] / (balance_df['Stocks In Store'] + balance_df['Units Sold'])) * 100, 
@@ -225,7 +241,6 @@ if master_file and sales_file:
             st.subheader("👤 Chronological Performance Matrix")
             st.markdown("Track and evaluate team or individual contribution over time to liquidate aging asset buckets.")
             
-            # FIX 3: Add dedicated "All Staff Summary" tab along with individual salesperson sub-tabs
             tab_options = ["🏆 All Staff Summary"] + salespeople
             sp_tabs = st.tabs(tab_options)
             
