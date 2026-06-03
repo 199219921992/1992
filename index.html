@@ -24,12 +24,13 @@ import numpy as np
 st.set_page_config(layout="wide", page_title="Incentive Dashboard")
 
 st.title("📊 Enterprise Stock Age & Incentive Analytics Hub")
-st.markdown("Upload your core operational datasets below to calculate spot incentives, track aging pipelines, and filter metrics.")
+st.markdown("Upload your core operational datasets below to compare reports, calculate spot incentives, and track aging pipelines.")
 
 # Sidebar File Uploaders
 st.sidebar.header("📁 Data Layer Uploads")
 master_file = st.sidebar.file_uploader("1. Master Stock Report (CSV)", type=["csv"])
 sales_file = st.sidebar.file_uploader("2. Product Wise Sales Report (CSV)", type=["csv"])
+aging_file = st.sidebar.file_uploader("3. Aging Report (CSV)", type=["csv"])  # FIX 1: New Aging Report input layer
 
 def assign_bucket(age):
     """Categorizes numerical age inputs into explicit business target buckets."""
@@ -75,23 +76,44 @@ def compute_incentives(row):
         
     return inc_pct * mrp * qty
 
-if master_file and sales_file:
+# FIX 1: Ensure all three files are present before initializing comparison engine
+if master_file and sales_file and aging_file:
     try:
         # Load Raw Files
         df_master = pd.read_csv(master_file)
         df_sales = pd.read_csv(sales_file)
+        df_aging = pd.read_csv(aging_file)
+        
+        # Strip whitespaces from column lists to avoid tracking mismatches
+        df_master.columns = df_master.columns.str.strip()
+        df_sales.columns = df_sales.columns.str.strip()
+        df_aging.columns = df_aging.columns.str.strip()
         
         # Clean Master Stock Report Datatypes
-        df_master['Age'] = pd.to_numeric(df_master['Age'], errors='coerce')
         df_master['AvailableQuantity'] = pd.to_numeric(df_master['AvailableQuantity'], errors='coerce').fillna(0)
         df_master['CTC'] = pd.to_numeric(df_master['CTC'], errors='coerce').fillna(0)
         df_master['MRP'] = pd.to_numeric(df_master['MRP'], errors='coerce').fillna(0)
-        
-        # Robust validation fallback for Master TotalCTC/TotalMRP records
         df_master['TotalCTC'] = pd.to_numeric(df_master['TotalCTC'], errors='coerce').fillna(0)
-        df_master['TotalCTC'] = np.where(df_master['TotalCTC'] == 0, df_master['AvailableQuantity'] * df_master['CTC'], df_master['TotalCTC'])
-        
         df_master['TotalMRP'] = pd.to_numeric(df_master['TotalMRP'], errors='coerce').fillna(0)
+        
+        # Clean Aging Report Datatypes
+        if 'Age' in df_aging.columns:
+            df_aging['Age'] = pd.to_numeric(df_aging['Age'], errors='coerce')
+        elif 'ProductAge' in df_aging.columns:
+            df_aging['Age'] = pd.to_numeric(df_aging['ProductAge'], errors='coerce')
+            
+        # FIX 1: Compare Aging Report with Master Stock Report file using ProductID map
+        if 'ProductID' in df_aging.columns and 'Age' in df_aging.columns:
+            aging_map = df_aging.dropna(subset=['ProductID', 'Age']).set_index('ProductID')['Age'].to_dict()
+            # Overlay/map aging information onto the stock list records
+            df_master['Age'] = df_master['ProductID'].map(aging_map).fillna(pd.to_numeric(df_master.get('Age', np.nan), errors='coerce'))
+        else:
+            df_master['Age'] = pd.to_numeric(df_master.get('Age', np.nan), errors='coerce')
+            
+        df_master['Age'] = df_master['Age'].fillna(0)
+        
+        # Calculate Master fallback totals if unpopulated
+        df_master['TotalCTC'] = np.where(df_master['TotalCTC'] == 0, df_master['AvailableQuantity'] * df_master['CTC'], df_master['TotalCTC'])
         df_master['TotalMRP'] = np.where(df_master['TotalMRP'] == 0, df_master['AvailableQuantity'] * df_master['MRP'], df_master['TotalMRP'])
         
         # Clean Sales Report Datatypes
@@ -101,10 +123,10 @@ if master_file and sales_file:
         df_sales['TotalDiscount'] = pd.to_numeric(df_sales['TotalDiscount'], errors='coerce').fillna(0)
         df_sales['TotalMRP'] = pd.to_numeric(df_sales['TotalMRP'], errors='coerce').fillna(0)
         
-        # Resolve any missing Age fields in sales file using Master Stock data
-        if 'ProductID' in df_master.columns and 'Age' in df_master.columns:
-            age_mapping = df_master.set_index('ProductID')['Age'].to_dict()
-            df_sales['ProductAge'] = df_sales['ProductAge'].fillna(df_sales['ProductID'].map(age_mapping))
+        # Resolve any missing Age fields in sales file using updated Master Stock map
+        if 'ProductID' in df_master.columns:
+            master_age_map = df_master.set_index('ProductID')['Age'].to_dict()
+            df_sales['ProductAge'] = df_sales['ProductAge'].fillna(df_sales['ProductID'].map(master_age_map))
             
         # Parse Dates safely for interactive timelines
         df_sales['BillDate'] = pd.to_datetime(df_sales['BillDate'], errors='coerce')
@@ -113,7 +135,7 @@ if master_file and sales_file:
         
         # Apply standard classifications
         df_master['AgeBucket'] = df_master['Age'].apply(assign_bucket)
-        df_sales['AgeBucket'] = df_sales['ProductAge'].apply(apply_bucket if 'apply_bucket' in locals() else assign_bucket)
+        df_sales['AgeBucket'] = df_sales['ProductAge'].apply(assign_bucket)
         
         # Calculate derived metrics
         df_sales['CalculatedDiscountPct'] = (df_sales['TotalDiscount'] / df_sales['TotalMRP'].replace(0, np.nan)) * 100
@@ -152,13 +174,17 @@ if master_file and sales_file:
         # ISOLATING METRICS TO TARGET AGE BUCKETS ONLY
         df_sales_in_buckets = df_sales_filtered[df_sales_filtered['AgeBucket'].isin(target_buckets)]
 
-        # --- KPI & SUMMARY PANEL (Fix 1: Active Profile Scope removed completely) ---
+        # --- KPI & SUMMARY PANEL ---
         st.subheader("🎯 Aging Stock Performance Overview")
-        col_m1, col_m2 = st.columns(2)
+        col_m1, col_m2, col_m3 = st.columns(3)
         with col_m1:
             st.metric("💰 Incentives Disbursed", f"₹ {round(df_sales_in_buckets['AchievedIncentive'].sum()):,}")
         with col_m2:
             st.metric("📦 Total Units Cleared", f"{int(round(df_sales_in_buckets['Quantity'].sum())):,}")
+        with col_m3:
+            # FIX 1: Display true total stocks available across all targeted aging categories from compared reports
+            total_compared_stock = df_master_filtered_age['AvailableQuantity'].sum()
+            st.metric("🏢 Compared Aging Stock Available", f"{int(round(total_compared_stock)):,} Units")
 
         # Generate exact tabular balance mapping for charts and tables
         m_buckets_avail = df_master_filtered_age.groupby('AgeBucket')['AvailableQuantity'].sum()
@@ -176,11 +202,11 @@ if master_file and sales_file:
             st.subheader("📋 Store Balance Sheet: Inventory vs Liquidation")
             st.markdown("Analyze stock items remaining in store versus units sold, filtered dynamically by age categories.")
             
-            # Fix 2: Creating specialized inner sub-tabs for category-wise exploration
+            # Creating specialized inner sub-tabs for category-wise exploration
             cat_tab_labels = ["📊 Global Overview"] + target_buckets
             cat_tabs = st.tabs(cat_tab_labels)
             
-            # --- 1. GLOBAL OVERVIEW SUB-TAB ---
+            # --- GLOBAL OVERVIEW SUB-TAB ---
             with cat_tabs[0]:
                 sold_df = s_buckets_cleared.reset_index().rename(columns={'Quantity': 'Units Sold'})
                 stock_df = m_buckets_avail.reset_index().rename(columns={'AvailableQuantity': 'Stocks In Store'})
@@ -214,7 +240,7 @@ if master_file and sales_file:
                 )
                 st.plotly_chart(fig_compare, use_container_width=True)
 
-            # --- 2. INDIVIDUAL CATEGORY SUB-TABS (WITH REQUESTED PIE CHARTS) ---
+            # --- INDIVIDUAL CATEGORY SUB-TABS (WITH PIE CHARTS) ---
             for idx, bucket_name in enumerate(target_buckets, start=1):
                 with cat_tabs[idx]:
                     avail_qty = int(round(m_buckets_avail.get(bucket_name, 0)))
@@ -229,7 +255,6 @@ if master_file and sales_file:
                     st.markdown("---")
                     
                     if avail_qty > 0 or sold_qty > 0:
-                        # Construct a focused DataFrame for the Stock vs Sold Pie Chart
                         pie_mix_df = pd.DataFrame({
                             "Inventory Metric": ["Stocks In Store", "Units Sold"],
                             "Volume Count": [avail_qty, sold_qty]
@@ -346,7 +371,7 @@ if master_file and sales_file:
     except Exception as e:
         st.error(f"Error parsing datasets. Ensure files match required system schemas. Details: {e}")
 else:
-    st.info("💡 Complete Dashboard initialization is pending. Please upload your Master Stock and Product Wise Sales CSV files via the sidebar configuration panel.")
+    st.info("💡 Complete Dashboard initialization is pending. Please upload your Master Stock, Product Wise Sales, and Aging Report CSV files via the sidebar configuration panel.")
 `
         }
       }, document.getElementById("root"));
