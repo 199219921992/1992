@@ -131,7 +131,7 @@ if master_file and sales_file:
         
         # Sales Person Selection
         salespeople = sorted([str(x) for x in df_sales['SalesPerson'].dropna().unique()])
-        selected_sp = st.sidebar.selectbox("🎯 Select Sales Person", ["All Staff"] + salespeople)
+        selected_sp = st.sidebar.selectbox("🎯 Select Sales Person Scope", ["All Staff"] + salespeople)
         
         # Dynamic Time Window Filters
         months = sorted([str(x) for x in df_sales['SaleMonth'].unique() if x != 'Unknown Month'])
@@ -149,16 +149,17 @@ if master_file and sales_file:
         if selected_day != "All Days":
             df_sales_filtered = df_sales_filtered[df_sales_filtered['SaleDay'] == selected_day]
 
-        # ISOLATING METRICS TO TARGET AGE BUCKETS ONLY
+        # FIX 1: ISOLATING METRICS TO TARGET AGE BUCKETS ONLY
         df_sales_in_buckets = df_sales_filtered[df_sales_filtered['AgeBucket'].isin(target_buckets)]
 
+        st.subheader("🎯 Aging Stock Performance Overview")
         col_m1, col_m2, col_m3 = st.columns(3)
         with col_m1:
             st.metric("💰 Incentives Disbursed", f"₹ {round(df_sales_in_buckets['AchievedIncentive'].sum()):,}")
         with col_m2:
-            st.metric("📦 Units Cleared (Aging Buckets Only)", f"{int(round(df_sales_in_buckets['Quantity'].sum())):,}")
+            st.metric("📦 Units Cleared (Aged 300+ Days)", f"{int(round(df_sales_in_buckets['Quantity'].sum())):,}")
         with col_m3:
-            st.metric("👤 Active Profile Scope", f"{selected_sp}")
+            st.metric("👤 Active Profile Filter Scope", f"{selected_sp}")
 
         st.markdown("---")
 
@@ -168,17 +169,40 @@ if master_file and sales_file:
         tab1, tab2, tab3 = st.tabs(["📈 Stock vs Sales Mix", "👤 Chronological Performance Matrix", "🔮 Upcoming Slabs Pipe"])
         
         with tab1:
+            st.subheader("📋 Store Balance Sheet: Inventory vs Liquidation")
+            st.markdown("Detailed itemized breakdown showing how many stock units are in store vs how many have been successfully sold.")
+            
+            # FIX 2: Generate exact tabular balance mapping
+            sold_summary = df_sales[df_sales['AgeBucket'].isin(target_buckets)].groupby('AgeBucket')['Quantity'].sum().reset_index().rename(columns={'Quantity': 'Units Sold'})
+            stock_summary = df_master_filtered_age.groupby('AgeBucket')['AvailableQuantity'].sum().reset_index().rename(columns={'AvailableQuantity': 'Stocks In Store'})
+            inc_summary = df_sales[df_sales['AgeBucket'].isin(target_buckets)].groupby('AgeBucket')['AchievedIncentive'].sum().reset_index().rename(columns={'AchievedIncentive': 'Incentive Earned (₹)'})
+            
+            balance_df = pd.merge(stock_summary, sold_summary, on='AgeBucket', how='outer').fillna(0)
+            balance_df = pd.merge(balance_df, inc_summary, on='AgeBucket', how='outer').fillna(0)
+            
+            balance_df['Stocks In Store'] = balance_df['Stocks In Store'].round(0).astype(int)
+            balance_df['Units Sold'] = balance_df['Units Sold'].round(0).astype(int)
+            balance_df['Incentive Earned (₹)'] = balance_df['Incentive Earned (₹)'].round(0).astype(int)
+            
+            # Calculate clearance percentage rate safely
+            balance_df['Clearance Rate (%)'] = np.where(
+                balance_df['Stocks In Store'] > 0, 
+                (balance_df['Units Sold'] / (balance_df['Stocks In Store'] + balance_df['Units Sold'])) * 100, 
+                100.0
+            )
+            balance_df['Clearance Rate (%)'] = balance_df['Clearance Rate (%)'].round(1)
+            
+            st.dataframe(balance_df, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
             chart_col1, chart_col2 = st.columns(2)
             
             with chart_col1:
-                stock_pie_df = df_master_filtered_age.groupby('AgeBucket')['AvailableQuantity'].sum().reset_index()
-                stock_pie_df['AvailableQuantity'] = stock_pie_df['AvailableQuantity'].round(0)
-                
                 fig_pie_stock = px.pie(
-                    stock_pie_df, 
-                    values='AvailableQuantity', 
+                    balance_df, 
+                    values='Stocks In Store', 
                     names='AgeBucket',
-                    title="Warehouse Stock Mix (Available Inventory Count)",
+                    title="Warehouse Stock Volume Breakdown",
                     hole=0.4,
                     color_discrete_sequence=px.colors.sequential.Plotly3
                 )
@@ -186,84 +210,70 @@ if master_file and sales_file:
                 st.plotly_chart(fig_pie_stock, use_container_width=True)
                 
             with chart_col2:
-                sold_group = df_sales_in_buckets.groupby('AgeBucket')['Quantity'].sum().reset_index().rename(columns={'Quantity': 'Units Sold'})
-                avail_group = df_master_filtered_age.groupby('AgeBucket')['AvailableQuantity'].sum().reset_index().rename(columns={'AvailableQuantity': 'Warehouse Available'})
-                
-                comparison_df = pd.merge(avail_group, sold_group, on='AgeBucket', how='outer').fillna(0)
-                comparison_df[['Warehouse Available', 'Units Sold']] = comparison_df[['Warehouse Available', 'Units Sold']].round(0)
-                
                 fig_compare = px.bar(
-                    comparison_df, 
+                    balance_df, 
                     x='AgeBucket', 
-                    y=['Warehouse Available', 'Units Sold'],
+                    y=['Stocks In Store', 'Units Sold'],
                     barmode='group',
-                    title="Volume Comparison: Available Stock vs. Units Sold",
+                    title="Side-by-Side Comparison: Current Stock vs. Units Sold",
                     labels={'value': 'Total Items Count', 'variable': 'Category Metric'},
                     color_discrete_sequence=['#31333F', '#FF4B4B']
                 )
                 st.plotly_chart(fig_compare, use_container_width=True)
 
         with tab2:
-            st.subheader("👤 Individual Sales Staff Ledger Matrix")
-            st.markdown("Select a tab below to analyze a specific salesperson's timeline, cleanly sorted chronologically.")
+            st.subheader("👤 Chronological Performance Matrix")
+            st.markdown("Track and evaluate team or individual contribution over time to liquidate aging asset buckets.")
             
-            # FIXED: Determine individual salesperson listing targets
-            salespeople_tabs_list = salespeople if selected_sp == "All Staff" else [selected_sp]
+            # FIX 3: Add dedicated "All Staff Summary" tab along with individual salesperson sub-tabs
+            tab_options = ["🏆 All Staff Summary"] + salespeople
+            sp_tabs = st.tabs(tab_options)
             
-            if salespeople_tabs_list:
-                # Dynamically construct individual sub-tabs for each active person
-                sp_tabs = st.tabs(salespeople_tabs_list)
-                
-                for sp_name, sp_tab in zip(salespeople_tabs_list, sp_tabs):
-                    with sp_tab:
-                        st.markdown(f"### 📈 Performance Timeline for: **{sp_name}**")
+            for index, tab_title in enumerate(tab_options):
+                with sp_tabs[index]:
+                    if index == 0:
+                        st.markdown("### 🏆 Combined Team Performance Timeline")
+                        df_target_sales = df_sales_in_buckets.copy()
+                    else:
+                        st.markdown(f"### 👤 Performance Timeline for: **{tab_title}**")
+                        df_target_sales = df_sales_in_buckets[df_sales_in_buckets['SalesPerson'] == tab_title]
                         
-                        # Filter transactions strictly matching this individual salesperson
-                        df_sp_sales = df_sales_in_buckets[df_sales_in_buckets['SalesPerson'] == sp_name]
+                    if not df_target_sales.empty:
+                        # --- 1. MONTHWISE PROFILE ---
+                        st.markdown("#### 🗓️ Month-wise Activity Report")
+                        p_month = df_target_sales.pivot_table(index='SaleMonth', columns='AgeBucket', values='Quantity', aggfunc='sum', fill_value=0)
+                        for b in target_buckets:
+                            if b not in p_month.columns:
+                                p_month[b] = 0
+                        p_month = p_month[target_buckets]
+                        p_month['Total Units Sold'] = p_month.sum(axis=1)
+                        p_month['Total Incentive Earned (₹)'] = df_target_sales.groupby('SaleMonth')['AchievedIncentive'].sum().fillna(0)
                         
-                        if not df_sp_sales.empty:
-                            # --- 1. INDIVIDUAL MONTHWISE PROFILE ---
-                            st.markdown("#### 🗓️ Month-wise Activity Report")
-                            p_month = df_sp_sales.pivot_table(index='SaleMonth', columns='AgeBucket', values='Quantity', aggfunc='sum', fill_value=0)
-                            for b in target_buckets:
-                                if b not in p_month.columns:
-                                    p_month[b] = 0
-                            p_month = p_month[target_buckets]
-                            p_month['Total Units Sold'] = p_month.sum(axis=1)
-                            p_month['Total Incentive Earned (₹)'] = df_sp_sales.groupby('SaleMonth')['AchievedIncentive'].sum().fillna(0)
-                            
-                            # Sort chronologically by Month index
-                            p_month = p_month.sort_index(ascending=True).reset_index()
-                            
-                            # Standard format conversions to whole numbers
-                            for col in p_month.columns:
-                                if col != 'SaleMonth':
-                                    p_month[col] = p_month[col].round(0).astype(int)
-                            st.dataframe(p_month, use_container_width=True, hide_index=True)
-                            
-                            st.markdown("---")
-                            
-                            # --- 2. INDIVIDUAL DAYWISE PROFILE ---
-                            st.markdown("#### 📅 Day-wise Detailed Activity Ledger")
-                            p_day = df_sp_sales.pivot_table(index='SaleDay', columns='AgeBucket', values='Quantity', aggfunc='sum', fill_value=0)
-                            for b in target_buckets:
-                                if b not in p_day.columns:
-                                    p_day[b] = 0
-                            p_day = p_day[target_buckets]
-                            p_day['Total Units Sold'] = p_day.sum(axis=1)
-                            p_day['Total Incentive Earned (₹)'] = df_sp_sales.groupby('SaleDay')['AchievedIncentive'].sum().fillna(0)
-                            
-                            # Sort chronologically by Day index
-                            p_day = p_day.sort_index(ascending=True).reset_index()
-                            
-                            for col in p_day.columns:
-                                if col != 'SaleDay':
-                                    p_day[col] = p_day[col].round(0).astype(int)
-                            st.dataframe(p_day, use_container_width=True, hide_index=True)
-                        else:
-                            st.info(f"No transactions recorded for {sp_name} within the current filtering scope.")
-            else:
-                st.warning("No sales profiles could be retrieved from the active data context layers.")
+                        p_month = p_month.sort_index(ascending=True).reset_index()
+                        for col in p_month.columns:
+                            if col != 'SaleMonth':
+                                p_month[col] = p_month[col].round(0).astype(int)
+                        st.dataframe(p_month, use_container_width=True, hide_index=True)
+                        
+                        st.markdown("---")
+                        
+                        # --- 2. DAYWISE PROFILE ---
+                        st.markdown("#### 📅 Day-wise Detailed Activity Ledger")
+                        p_day = df_target_sales.pivot_table(index='SaleDay', columns='AgeBucket', values='Quantity', aggfunc='sum', fill_value=0)
+                        for b in target_buckets:
+                            if b not in p_day.columns:
+                                p_day[b] = 0
+                        p_day = p_day[target_buckets]
+                        p_day['Total Units Sold'] = p_day.sum(axis=1)
+                        p_day['Total Incentive Earned (₹)'] = df_target_sales.groupby('SaleDay')['AchievedIncentive'].sum().fillna(0)
+                        
+                        p_day = p_day.sort_index(ascending=True).reset_index()
+                        for col in p_day.columns:
+                            if col != 'SaleDay':
+                                p_day[col] = p_day[col].round(0).astype(int)
+                        st.dataframe(p_day, use_container_width=True, hide_index=True)
+                    else:
+                        st.info(f"No operational line item metrics recorded within the current filter profile selection.")
 
         with tab3:
             st.subheader("🔮 Near-Term Aging Pipeline Exposure (200–299 Days)")
